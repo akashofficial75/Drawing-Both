@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AkashProg | Pro Studio Board</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+    
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Outfit', sans-serif; background-color: #0b0e14; color: white; height: 100vh; width: 100vw; overflow: hidden; touch-action: none; }
+        .canvas-bg { background-image: radial-gradient(#2d3748 0.5px, transparent 0.5px); background-size: 20px 20px; background-color: #121720; }
+        .glass { background: rgba(23, 25, 35, 0.85); backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .akash-badge { background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%); box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4); animation: pulse 2s infinite; }
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
+        canvas { touch-action: none; cursor: crosshair; user-select: none; -webkit-user-select: none; border-radius: 20px; background: white; }
+        .active-btn { background: #6366f1 !important; color: white !important; box-shadow: 0 0 15px rgba(99, 102, 241, 0.5); }
+    </style>
+</head>
+<body class="canvas-bg">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        function App() {
+            const [joined, setJoined] = useState(false);
+            const [roomId, setRoomId] = useState('');
+            const [username, setUsername] = useState('');
+            const [color, setColor] = useState('#6366f1');
+            const [size, setSize] = useState(5);
+            const [tool, setTool] = useState('pencil');
+            const [users, setUsers] = useState([]);
+            const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+            
+            const canvasRef = useRef(null);
+            const socketRef = useRef(null);
+            const isDrawing = useRef(false);
+            const lastPos = useRef({ x: 0, y: 0 });
+            const history = useRef([]);
+
+            // অটোমেটিক স্ক্রিন সাইজ অ্যাডজাস্ট করার জন্য
+            useEffect(() => {
+                const updateSize = () => {
+                    const padding = window.innerWidth < 768 ? 40 : 100;
+                    const toolbarHeight = window.innerWidth < 768 ? 100 : 0;
+                    setCanvasSize({
+                        width: window.innerWidth - padding,
+                        height: window.innerHeight - (120 + toolbarHeight)
+                    });
+                };
+                window.addEventListener('resize', updateSize);
+                updateSize();
+                return () => window.removeEventListener('resize', updateSize);
+            }, []);
+
+            useEffect(() => {
+                if (joined) {
+                    const socketURL = window.location.hostname === 'localhost' ? 'http://localhost:5000' : window.location.origin;
+                    socketRef.current = io(socketURL);
+                    socketRef.current.emit('join-room', { roomId, username });
+                    socketRef.current.on('user-list', (list) => setUsers(list));
+                    socketRef.current.on('draw-data', (data) => {
+                        const ctx = canvasRef.current.getContext('2d');
+                        drawOnCanvas(ctx, data.prevX, data.prevY, data.x, data.y, data.color, data.size, data.mode);
+                    });
+                    socketRef.current.on('clear-canvas', () => {
+                        const ctx = canvasRef.current.getContext('2d');
+                        ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+                    });
+                }
+            }, [joined]);
+
+            const getPos = (e) => {
+                const rect = canvasRef.current.getBoundingClientRect();
+                let clientX, clientY;
+                if (e.touches && e.touches.length > 0) {
+                    clientX = e.touches[0].clientX;
+                    clientY = e.touches[0].clientY;
+                } else {
+                    clientX = e.clientX;
+                    clientY = e.clientY;
+                }
+                return { x: clientX - rect.left, y: clientY - rect.top };
+            };
+
+            const drawOnCanvas = (ctx, prevX, prevY, x, y, col, sz, mode) => {
+                ctx.beginPath();
+                ctx.globalCompositeOperation = mode === 'eraser' ? 'destination-out' : 'source-over';
+                ctx.strokeStyle = col;
+                ctx.lineWidth = sz;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.moveTo(prevX, prevY);
+                ctx.lineTo(x, y);
+                ctx.stroke();
+                ctx.closePath();
+            };
+
+            const startDrawing = (e) => {
+                isDrawing.current = true;
+                lastPos.current = getPos(e);
+                history.current.push(canvasRef.current.toDataURL());
+            };
+
+            const draw = (e) => {
+                if (!isDrawing.current) return;
+                const ctx = canvasRef.current.getContext('2d');
+                const pos = getPos(e);
+                drawOnCanvas(ctx, lastPos.current.x, lastPos.current.y, pos.x, pos.y, color, size, tool);
+                socketRef.current.emit('draw', { 
+                    roomId, prevX: lastPos.current.x, prevY: lastPos.current.y, x: pos.x, y: pos.y, color, size, mode: tool 
+                });
+                lastPos.current = pos;
+            };
+
+            const clearCanvas = () => {
+                const ctx = canvasRef.current.getContext('2d');
+                ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+                socketRef.current.emit('clear', roomId);
+            };
+
+            if (!joined) {
+                return (
+                    <div className="flex flex-col h-screen items-center justify-center p-6 bg-[#0b0e14]">
+                        <div className="glass p-10 rounded-[40px] shadow-2xl w-full max-w-md text-center border border-indigo-500/30">
+                            <div className="akash-badge inline-block px-6 py-2 rounded-full text-[10px] font-black uppercase tracking-[0.2em] mb-6">
+                                Created by AkashProg
+                            </div>
+                            <h2 className="text-4xl font-extrabold mb-2 tracking-tighter">Collaborative<br/><span className="text-indigo-500 text-5xl">Studio.</span></h2>
+                            <p className="text-gray-400 mb-8 text-sm font-medium italic">Draw together with anyone, anywhere, instantly.</p>
+                            <div className="space-y-4 text-left">
+                                <input className="w-full bg-white/5 border border-white/10 p-4 rounded-2xl focus:border-indigo-500 outline-none transition-all text-white" placeholder="Enter Name" onChange={e => setUsername(e.target.value)} />
+                                <input className="w-full bg-white/5 border border-white/10 p-4 rounded-2xl focus:border-indigo-500 outline-none transition-all text-white" placeholder="Room ID" onChange={e => setRoomId(e.target.value)} />
+                                <button onClick={() => username && roomId && setJoined(true)} className="w-full bg-indigo-600 hover:bg-indigo-500 py-4 rounded-2xl font-bold text-lg shadow-xl shadow-indigo-500/30 mt-4 transition-all active:scale-95">Enter Studio</button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="flex flex-col h-screen w-screen overflow-hidden">
+                    {/* Header */}
+                    <div className="h-20 flex items-center justify-between px-6 z-50">
+                         <div className="hidden md:block w-32"></div> {/* Spacer */}
+                         <div className="akash-badge px-6 py-2 rounded-2xl text-[11px] font-bold uppercase tracking-widest flex items-center gap-3">
+                             <div className="w-2 h-2 bg-white rounded-full animate-ping"></div>
+                             Created by AkashProg
+                         </div>
+                         <div className="glass px-4 py-2 rounded-2xl text-xs font-bold border-indigo-500/20 flex items-center gap-2">
+                             <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+                             {users.length} Active
+                         </div>
+                    </div>
+
+                    <div className="flex-1 flex flex-col md:flex-row items-center justify-center p-4 gap-4">
+                        {/* Toolbar */}
+                        <div className="flex flex-row md:flex-col gap-3 p-3 glass rounded-3xl z-50">
+                            <button onClick={() => setTool('pencil')} className={`p-4 rounded-2xl transition-all ${tool === 'pencil' ? 'active-btn' : 'hover:bg-white/10'}`}>✎</button>
+                            <button onClick={() => setTool('eraser')} className={`p-4 rounded-2xl transition-all ${tool === 'eraser' ? 'active-btn' : 'hover:bg-white/10'}`}>⎋</button>
+                            <input type="color" value={color} onChange={e => setColor(e.target.value)} className="w-10 h-10 rounded-xl cursor-pointer bg-transparent border-none mt-1" />
+                            <div className="hidden md:block h-[1px] bg-white/10 w-full my-2"></div>
+                            <button onClick={clearCanvas} className="p-4 hover:bg-red-500/20 text-red-400 rounded-2xl">🗑</button>
+                        </div>
+
+                        {/* Canvas Area */}
+                        <div className="relative flex-1 flex items-center justify-center w-full h-full overflow-hidden">
+                            <canvas 
+                                ref={canvasRef}
+                                width={canvasSize.width}
+                                height={canvasSize.height}
+                                onMouseDown={startDrawing}
+                                onMouseMove={draw}
+                                onMouseUp={() => isDrawing.current = false}
+                                onMouseOut={() => isDrawing.current = false}
+                                onTouchStart={startDrawing}
+                                onTouchMove={draw}
+                                onTouchEnd={() => isDrawing.current = false}
+                                className="shadow-[0_0_80px_rgba(0,0,0,0.6)] border-[6px] md:border-[12px] border-[#171923]"
+                            />
+                            
+                            {/* Brush Size Slider (Canvas এর ওপরে ভাসমান) */}
+                            <div className="absolute bottom-6 glass px-6 py-3 rounded-full flex items-center gap-4 border border-white/10">
+                                 <input type="range" min="1" max="50" value={size} onChange={(e) => setSize(e.target.value)} className="w-24 md:w-40" />
+                                 <span className="text-xs font-bold text-indigo-400">{size}px</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
